@@ -1,0 +1,6 @@
+include README.md
+include LICENSE
+exclude WORK_LOG.md
+recursive-include tests test_*.py
+include tests/cds_variables.json
+global-exclude *.py[cod]

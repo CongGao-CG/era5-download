@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "era5-download"
+version = "0.1.0"
+description = "Submit and download ERA5 CDS jobs with resumable transfers and shared-worker coordination"
+readme = "README.md"
+requires-python = ">=3.13"
+license = {text = "MIT"}
+authors = [{name = "Cong Gao"}]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+]
+dependencies = [
+    "ecmwf-datastores-client>=0.5.3,<0.6",
+    "requests>=2.31,<3",
+    "tqdm>=4.66,<5",
+]
+
+[project.urls]
+Homepage = "https://github.com/CongGao-CG/era5-download#readme"
+Repository = "https://github.com/CongGao-CG/era5-download"
+
+[project.scripts]
+era5-download = "era5_download.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["era5_download*"]
