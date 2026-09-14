@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "era5-download"
-version = "0.1.3"
+version = "0.1.4"
 description = "Submit and download ERA5 CDS jobs with resumable transfers and shared-worker coordination"
 readme = "README.md"
 requires-python = ">=3.13"

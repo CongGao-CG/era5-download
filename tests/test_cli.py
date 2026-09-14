@@ -325,6 +325,40 @@ class DocumentedCLITests(unittest.TestCase):
 
 
 class ManifestJobStatusTests(unittest.TestCase):
+    def test_download_urls_uses_only_filename_and_url(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "url.csv"
+            source.write_text("filename,url,status,account\nsub/a.nc,https://example.test/a,failed,unknown\n"
+                              "b.nc,,successful,unknown\n")
+            with patch("era5_download.cli.load_accounts") as load, \
+                 patch("era5_download.cli.download_file") as download, redirect_stdout(io.StringIO()):
+                result = main(["download", "--urls-csv", str(source), "-o", directory, "--quiet"])
+            self.assertEqual(result, 0)
+            load.assert_not_called()
+            download.assert_called_once_with("https://example.test/a", Path(directory).resolve() / "sub/a.nc",
+                                             overwrite=False, timeout=60, retries=5, progress=False)
+
+    def test_download_urls_validates_before_transfers(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "url.csv"
+            for bad in ("../bad.nc,https://example.test/b", "a.nc,https://example.test/b",
+                        "bad.nc,file:///tmp/data"):
+                source.write_text("filename,url\na.nc,https://example.test/a\n" + bad + "\n")
+                with patch("era5_download.cli.download_file") as download, redirect_stderr(io.StringIO()):
+                    self.assertEqual(main(["download", "--urls-csv", str(source)]), 1)
+                download.assert_not_called()
+
+    def test_download_urls_continues_after_failure(self):
+        from era5_download.transfer import DownloadError
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "url.csv"
+            source.write_text("filename,url\na.nc,https://example.test/a\nb.nc,https://example.test/b\n")
+            with patch("era5_download.cli.download_file", side_effect=[DownloadError("private-url"), Path("b.nc")]) as download, \
+                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(main(["download", "--urls-csv", str(source)]), 1)
+            self.assertEqual(download.call_count, 2)
+            self.assertNotIn("private-url", stderr.getvalue())
+
     def test_urls_csv_preserves_manifest_and_records_status(self):
         import csv
         from unittest.mock import Mock

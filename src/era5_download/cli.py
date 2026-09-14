@@ -19,7 +19,7 @@ from .variables import find_variables, print_variable_table
 from .client import CDSError, ERA5Client
 from .config import load_accounts
 from .manifest import (ManifestEntry, append_manifest, read_manifest,
-                       validate_manifest_append, write_manifest)
+                       validate_filename, validate_manifest_append, write_manifest)
 from .mappings import resolve_dataset
 from .naming import filename_from_request, generate_flist, month_range
 from .requests import build_template, monthly_request
@@ -102,6 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "download":
             command.add_argument("job_ids", nargs="*", help="existing CDS request IDs")
             command.add_argument("--manifest", type=Path, help="canonical or legacy CSV manifest")
+            command.add_argument("--urls-csv", type=Path,
+                                 help="download filename/url CSV rows without CDS credentials; ignores other columns")
         else:
             command.add_argument("--interval", type=_positive, default=60, help="seconds between cycles (default: 60)")
             command.add_argument("--cycles", type=_count, help="stop after this many cycles; default: run until Ctrl-C")
@@ -222,7 +224,52 @@ def _submit_cycle(args, clients) -> int:
     return 0
 
 
+def _download_urls(args) -> int:
+    if args.job_ids or args.manifest:
+        raise ValueError("Use only one of job IDs, --manifest, or --urls-csv")
+    root = args.output_dir.expanduser().resolve()
+    tasks = {}
+    with args.urls_csv.open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream, strict=True)
+        headers = reader.fieldnames or []
+        if any(headers.count(name) != 1 for name in ("filename", "url")):
+            raise ValueError("URL CSV requires unique filename and url columns")
+        try:
+            for row in reader:
+                if None in row or row.get("filename") is None or row.get("url") is None:
+                    raise ValueError(f"URL CSV line {reader.line_num}: missing or extra values")
+                url = row["url"].strip()
+                if not url:
+                    continue
+                filename = validate_filename(row["filename"])
+                if not url.startswith(("http://", "https://")):
+                    raise ValueError(f"URL CSV line {reader.line_num}: expected an HTTP(S) URL")
+                target = root / filename
+                for candidate in (target, Path(str(target) + ".part"), Path(str(target) + ".lock")):
+                    if not candidate.resolve().is_relative_to(root):
+                        raise ValueError("Download path must stay inside the output directory")
+                if filename in tasks and tasks[filename] != url:
+                    raise ValueError("URL CSV assigns one filename to different URLs")
+                tasks[filename] = url
+        except csv.Error as exc:
+            raise ValueError(f"Invalid URL CSV: {exc}") from None
+    errors = 0
+    for filename, url in tasks.items():
+        try:
+            path = download_file(url, root / filename, overwrite=args.overwrite,
+                                 timeout=args.timeout, retries=args.retries, progress=not args.quiet)
+            print(f"complete: {path}")
+        except DownloadBusy:
+            print(f"{filename}: reserved by another worker; skipped")
+        except (DownloadError, OSError, ValueError):
+            errors += 1
+            print(f"{filename}: download failed; check URL availability and destination", file=sys.stderr)
+    return 1 if errors else 0
+
+
 def run(args) -> int:
+    if args.command == "download" and args.urls_csv:
+        return _download_urls(args)
     if args.command == "variables":
         records = find_variables(datasets=args.dataset, search=[*args.query, *args.search],
                                  family=args.family, frequency=args.frequency)

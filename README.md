@@ -478,6 +478,21 @@ input manifest. The output path must not already exist. `--status` also
 filters the exported rows. A result lookup failure reports an error without
 creating the URL CSV.
 
+Download directly from that CSV without CDS credentials:
+
+```sh
+era5-download download --urls-csv url.csv -o data
+```
+
+Only `filename` and `url` are used; all other columns are ignored. Blank
+URLs are skipped. Filenames must be safe relative paths under the output
+directory (the current directory by default). This option cannot be combined
+with job IDs or `--manifest`. Transfers support partial-file resuming and
+shared-worker locks. Since the CSV supplies no expected size, existing
+completed files require `--overwrite`. Use `--quiet` to hide progress bars.
+Failed transfers are reported and remaining rows are still attempted; any
+failure produces a nonzero exit code. Refresh expired URLs before retrying.
+
 `--from-manifest` reads an existing CSV without modifying it. Accounts are
 selected from its rows unless `--account` or `--all-accounts` is specified;
 explicit selection restricts the rows processed. Each job is looked up
