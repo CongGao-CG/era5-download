@@ -91,6 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
     jobs.add_argument("--limit", type=_count, default=1000, help="maximum jobs per account (default: 1000)")
     jobs.add_argument("--json", action="store_true", help="print job summaries as JSON")
     jobs.add_argument("--manifest", type=Path, help="also write a CSV manifest; fails if it already exists")
+    jobs.add_argument("--from-manifest", type=Path,
+                      help="look up only jobs in this CSV, using its accounts and filenames; ignores --limit")
     for name, help_text in (("download", "download job IDs, a manifest, or all successful jobs"),
                             ("watch", "poll and download successful jobs repeatedly")):
         command = sub.add_parser(name, help=help_text)
@@ -250,16 +252,21 @@ def run(args) -> int:
         return 0
     entries = None
     names = args.account
-    if args.command == "download" and args.manifest:
-        if args.job_ids:
+    input_manifest = (args.manifest if args.command == "download" else
+                      args.from_manifest if args.command == "jobs" else None)
+    if args.command == "jobs" and args.manifest and args.manifest.exists():
+        raise ValueError("Manifest already exists; choose a new output path")
+    if input_manifest:
+        if getattr(args, "job_ids", None):
             raise ValueError("Use either job IDs or --manifest")
-        entries = read_manifest(args.manifest)
+        entries = read_manifest(input_manifest)
         if not names and not args.all_accounts:
             names = list(dict.fromkeys(entry.account for entry in entries))
-        if not entries:
+        if not entries and args.command == "download":
             print("Manifest has no downloads")
             return 0
-    credentials = load_accounts(args.config, names, args.all_accounts, args.rc_file, args.url)
+    credentials = ([] if entries == [] else
+                   load_accounts(args.config, names, args.all_accounts, args.rc_file, args.url))
     clients = {credential.name: ERA5Client(credential, timeout=args.timeout, retries=args.retries)
                for credential in credentials}
     if args.command == "download":
@@ -291,10 +298,18 @@ def run(args) -> int:
         summaries = []
         manifest = []
         for account, client in clients.items():
-            for job in client.iter_jobs(status=args.status, limit=args.limit):
+            if entries is None:
+                jobs = ((job, job.filename) for job in
+                        client.iter_jobs(status=args.status, limit=args.limit))
+            else:
+                jobs = ((client.get_job(entry.job_id), entry.filename)
+                        for entry in entries if entry.account == account)
+            for job, filename in jobs:
+                if args.status and job.status != args.status:
+                    continue
                 summaries.append(dict(account=account, job_id=job.job_id, status=job.status,
-                                      dataset=job.dataset, filename=job.filename))
-                manifest.append(ManifestEntry(job.filename, job.job_id, account))
+                                      dataset=job.dataset, filename=filename))
+                manifest.append(ManifestEntry(filename, job.job_id, account))
         if args.json:
             print(json.dumps(summaries, indent=2))
         else:

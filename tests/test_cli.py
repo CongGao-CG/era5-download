@@ -324,5 +324,57 @@ class DocumentedCLITests(unittest.TestCase):
             self.assertEqual(client.submitted, [])
 
 
+class ManifestJobStatusTests(unittest.TestCase):
+    def test_manifest_accounts_filenames_filter_and_export(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "jobs.csv"
+            output = Path(directory) / "selected.csv"
+            source.write_text("filename,job_id,account\ncustom.nc,id1,qq\nother.nc,id2,gmail\n")
+            original = source.read_bytes()
+            clients = {}
+
+            def make_client(credential, **kwargs):
+                from unittest.mock import Mock
+                client = Mock()
+                client.get_job.return_value = SimpleNamespace(
+                    job_id="id1" if credential.name == "qq" else "id2",
+                    status="running" if credential.name == "qq" else "successful",
+                    dataset="era5", filename="generated.nc")
+                clients[credential.name] = client
+                return client
+
+            for selection in ([], ["--account", "qq"]):
+                credentials = [SimpleNamespace(name=name) for name in
+                               (["qq"] if selection else ["qq", "gmail"])]
+                with patch("era5_download.cli.load_accounts", return_value=credentials) as load, \
+                     patch("era5_download.cli.ERA5Client", side_effect=make_client), \
+                     redirect_stdout(io.StringIO()) as stdout:
+                    result = main(["--config", "accounts.json", *selection, "jobs",
+                                   "--from-manifest", str(source), "--status", "running",
+                                   "--limit", "1", "--json"])
+                self.assertEqual(result, 0)
+                self.assertEqual(load.call_args.args[1], ["qq"] if selection else ["qq", "gmail"])
+                rows = json.loads(stdout.getvalue())
+                self.assertEqual([(r["filename"], r["status"]) for r in rows], [("custom.nc", "running")])
+                clients["qq"].get_job.assert_called_once_with("id1")
+                clients["qq"].iter_jobs.assert_not_called()
+            with patch("era5_download.cli.load_accounts", return_value=credentials), \
+                 patch("era5_download.cli.ERA5Client", side_effect=make_client), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["jobs", "--from-manifest", str(source),
+                                       "--manifest", str(output)]), 0)
+            self.assertEqual(read_manifest(output), [ManifestEntry("custom.nc", "id1", "qq")])
+            self.assertEqual(source.read_bytes(), original)
+
+    def test_empty_manifest_needs_no_credentials(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "empty.csv"
+            source.write_text("filename,job_id,account\n")
+            with patch("era5_download.cli.load_accounts") as load, redirect_stdout(io.StringIO()) as stdout:
+                self.assertEqual(main(["jobs", "--from-manifest", str(source), "--json"]), 0)
+            load.assert_not_called()
+            self.assertEqual(json.loads(stdout.getvalue()), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -869,6 +869,22 @@ To list up to 5,000 available jobs for the default account instead:
 era5-download jobs --limit 5000
 ```
 
+Check only the jobs recorded in a submission manifest, using each row's
+account credentials and original filename:
+
+```sh
+era5-download --config accounts.json jobs --from-manifest jobs.csv
+```
+
+`--from-manifest` reads an existing CSV without modifying it. Accounts are
+selected from its rows unless `--account` or `--all-accounts` is specified;
+explicit selection restricts the rows processed. Each job is looked up
+directly, so `--limit` does not apply. Combine with `--status running` to
+filter results or `--json` for structured status output. Empty manifests
+produce an empty listing. `--manifest NEW.csv` remains an optional export
+of the listed jobs (filename, job ID and account, without status), and
+refuses to overwrite an existing file.
+
 To list only jobs currently running for the default account, apply the
 `running` status filter. The 1,000-job limit applies to the filtered results:
 
