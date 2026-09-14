@@ -325,6 +325,35 @@ class DocumentedCLITests(unittest.TestCase):
 
 
 class ManifestJobStatusTests(unittest.TestCase):
+    def test_urls_csv_preserves_manifest_and_records_status(self):
+        import csv
+        from unittest.mock import Mock
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "jobs.csv"
+            output = Path(directory) / "url.csv"
+            source.write_text("filename,job_id,account\na.nc,id1,qq\nb.nc,id2,qq\n")
+            original = source.read_bytes()
+            client = Mock()
+            client.get_job.side_effect = [
+                SimpleNamespace(job_id="id1", status="successful", dataset="era5"),
+                SimpleNamespace(job_id="id2", status="running", dataset="era5")]
+            client.get_result_url.side_effect = ["https://example.test/data?a=1,b=2", None]
+            with patch("era5_download.cli.load_accounts", return_value=[SimpleNamespace(name="qq")]), \
+                 patch("era5_download.cli.ERA5Client", return_value=client), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["jobs", "--from-manifest", str(source),
+                                       "--urls-csv", str(output)]), 0)
+            with output.open(newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(rows[0], dict(filename="a.nc", job_id="id1", account="qq",
+                                           status="successful", url="https://example.test/data?a=1,b=2"))
+            self.assertEqual(rows[1]["url"], "")
+            self.assertEqual(rows[1]["status"], "running")
+            self.assertEqual(source.read_bytes(), original)
+            with redirect_stderr(io.StringIO()), patch("era5_download.cli.load_accounts") as load:
+                self.assertEqual(main(["jobs", "--urls-csv", str(output)]), 1)
+            load.assert_not_called()
+
     def test_manifest_accounts_filenames_filter_and_export(self):
         with TemporaryDirectory() as directory:
             source = Path(directory) / "jobs.csv"

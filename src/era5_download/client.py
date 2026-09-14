@@ -90,6 +90,17 @@ class ERA5Client:
         except Exception as exc:
             raise self._failure("job listing", exc) from None
 
+    def get_result_url(self, job: Job | str) -> str | None:
+        """Return a successful job's temporary result URL, or None if not ready."""
+        if isinstance(job, str):
+            job = self.get_job(job)
+        if job.status != "successful":
+            return None
+        try:
+            return self.backend.get_results(job.job_id).location
+        except Exception as exc:
+            raise self._failure("results lookup", exc) from None
+
     def download_job(self, job: Job | str, output_dir: str | Path = ".", *,
                      filename: str | None = None, overwrite: bool = False,
                      progress: bool = True) -> Path | None:
@@ -116,4 +127,3 @@ class ERA5Client:
             raise self._failure("results lookup", exc) from None
         return download_file(location, target, expected_size=size, overwrite=overwrite,
                              timeout=self.timeout, retries=self.retries, progress=progress)
-

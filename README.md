@@ -268,8 +268,8 @@ especially with several configured profiles or before changing which
 
 #### Browse and search variables
 
-`variables` displays the same bundled catalogue as the reference tables
-below. It runs locally without credentials or CDS API requests. With no
+`variables` displays the same bundled catalogue as the [variable reference tables](#variable-reference)
+at the end of this README. It runs locally without credentials or CDS API requests. With no
 filters, it shows all 290 variable/parameter records covering 289 distinct
 CDS variable names; some names represent different parameters in different
 datasets.
@@ -340,8 +340,8 @@ Submit one request per calendar month under the default account for January
 1980 through December 2025 (`2026` is excluded), for sea surface temperature
 (`sst`). The alias `era5_monthly_single` selects the CDS collection
 [`reanalysis-era5-single-levels-monthly-means`](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=overview).
-`--var` accepts supported official ECMWF GRIB short names (see the tables
-below); it can be repeated or comma-separated to include several variables
+`--var` accepts supported official ECMWF GRIB short names (see the
+[variable reference](#variable-reference)); it can be repeated or comma-separated to include several variables
 in the same request. This dataset
 needs no `--pressure-level`, since it has none. Record each new job ID,
 generated destination filename and account label in `jobs.csv`; filenames
@@ -406,7 +406,302 @@ IDs); a raw or unlisted collection ID has no built-in preset and requires
 not build at all; submit those with `ERA5Client.submit_job` and an explicit
 request instead.
 
-#### Official GRIB short names for `--var`
+#### Templates and submission tracking
+
+Combining `--template` with `--var`/`--pressure-level` replaces only the
+request's `variable`/`pressure_level` fields, leaving every other template
+field (region, times, days, product type, output format) unchanged, and adds
+none of the automatic defaults described above — useful for keeping a
+hand-written template's custom settings while still choosing the variable
+through `--var`. For hourly and daily-statistics datasets, `submit` fills in
+every calendar day of each month unless the template already sets its own
+`day` selection.
+
+Each successful submission is appended to `--manifest` immediately. On
+restart, generated filenames already in that manifest are skipped regardless
+of job status. Use a separate manifest for each dataset/request template;
+filenames are not a complete request identity. A failure or interruption
+between remote submission and recording its row can leave an unrecorded job;
+inspect `jobs` before restarting in that case.
+
+With multiple accounts selected, submissions are spread round-robin. Each
+account is throttled to `--max-in-flight` (default: 2) accepted/running jobs
+**submitted by the current invocation**. It polls the oldest tracked job
+every `--poll-interval` seconds (default: 5). Earlier jobs, including jobs
+loaded from a resume manifest, do not count toward this limit. Submission
+returns once all new jobs have been recorded; it does not wait for the last
+jobs to finish or download their results. Use one submission process per
+manifest; `.lock` reservations coordinate downloads only.
+
+### Download
+
+The **1,000-job listing limit is a package default**, not a CDS server quota.
+Change it with `--limit`; it controls the total jobs listed per account.
+The package requests API pages of up to 100 jobs until that total is reached
+or the server returns no further results. This is separate from CDS limits
+on request size or concurrent processing.
+
+Retrieve up to 1,000 jobs available through the CDS API for the default
+account, newest-created first, and print their [account label](#account-labels),
+job ID, [status](#job-statuses) and [generated filename](#generated-filenames).
+This queries the account's server-side job list with
+no status or dataset filter, so it includes pending, running and finished
+jobs, including jobs submitted with other tools:
+
+```sh
+era5-download jobs
+```
+
+To list up to 5,000 available jobs for the default account instead:
+
+```sh
+era5-download jobs --limit 5000
+```
+
+Check only the jobs recorded in a submission manifest, using each row's
+account credentials and original filename:
+
+```sh
+era5-download --config accounts.json jobs --from-manifest jobs.csv
+```
+
+Save those jobs' current statuses and download URLs to `url.csv`:
+
+```sh
+era5-download --config accounts.json jobs --from-manifest jobs.csv --urls-csv url.csv
+```
+
+The CSV contains `filename,job_id,account,status,url`. Only successful jobs
+have a result URL; other statuses have an empty URL field. Result URLs are
+temporary. This fetches metadata without downloading data or changing the
+input manifest. The output path must not already exist. `--status` also
+filters the exported rows. A result lookup failure reports an error without
+creating the URL CSV.
+
+`--from-manifest` reads an existing CSV without modifying it. Accounts are
+selected from its rows unless `--account` or `--all-accounts` is specified;
+explicit selection restricts the rows processed. Each job is looked up
+directly, so `--limit` does not apply. Combine with `--status running` to
+filter results or `--json` for structured status output. Empty manifests
+produce an empty listing. `--manifest NEW.csv` remains an optional export
+of the listed jobs (filename, job ID and account, without status), and
+refuses to overwrite an existing file.
+
+To list only jobs currently running for the default account, apply the
+`running` status filter. The 1,000-job limit applies to the filtered results:
+
+```sh
+era5-download jobs --status running
+```
+
+To list accepted jobs that have not started running for that same account,
+query the `accepted` status separately:
+
+```sh
+era5-download jobs --status accepted
+```
+
+Look up the two specified job IDs directly under the default account and
+download their results into the current directory using generated filenames.
+Both IDs must belong to that account. Each job is downloaded only if its
+status is `successful`; other statuses are skipped without waiting:
+
+```sh
+era5-download download JOB_ID_1 JOB_ID_2
+```
+
+Read job IDs, destination filenames and account labels from `jobs.csv`, then
+look up each job under the account specified in its row. Download successful
+results to those filenames relative to the current directory; skip other
+statuses without waiting. This example uses default credentials, so the CSV
+account column must be absent or contain only `default`:
+
+```sh
+era5-download download --manifest jobs.csv
+```
+
+For a manifest containing named accounts, load their credentials from
+`accounts.json`. Account labels in the CSV must match profiles in that file;
+the command automatically selects the profiles referenced by the rows:
+
+```sh
+era5-download --config accounts.json download --manifest jobs.csv
+```
+
+To discover downloadable jobs without supplying IDs or a manifest, query
+the default account for up to 1,000 successful jobs, newest-created first,
+and download their results into the current directory:
+
+```sh
+era5-download download
+```
+
+For the default account, immediately query up to 1,000 successful jobs and
+download their results into the current directory. Wait 300 seconds after
+that cycle finishes, then repeat until Ctrl-C. Each cycle queries the newest
+successful jobs again; existing files with matching expected sizes are
+skipped. Increase `--limit` to reach jobs beyond the newest 1,000:
+
+```sh
+era5-download watch --interval 300
+```
+
+Download the supplied HTTP(S) URL directly to `out.nc` in the current
+directory. Replace `URL` with the download URL. This command requires no CDS
+account configuration and performs no CDS job lookup:
+
+```sh
+era5-download fetch-url URL -o out.nc
+```
+
+Print 24 filenames: January–December 2020 for `u200`, followed by the same
+months for `sst`. This is an offline naming helper; it uses no credentials,
+contacts no service and creates no files:
+
+```sh
+era5-download filenames u200 sst --begin 2020 --end 2021
+```
+
+`filenames` accepts the same `--begin`/`--end` `YYYY`/`YYYYMM`/`YYYYMMDD`
+values as `submit`, with `--end` exclusive at month granularity; this
+example prints 24 names: 12 months of 2020 for each field. `filenames` is an
+offline helper for simple `.nc` names; it does not generate a submission
+manifest or include request/job hashes.
+
+Query every account profile in `accounts.json` independently, using each
+profile's credentials. For the configuration shown under
+[Credentials](#credentials), that means `default` and `secondary`. Print up
+to 1,000 jobs per account with no status filter, grouped by account and
+newest-created first within each account:
+
+```sh
+era5-download --config accounts.json --all-accounts jobs
+```
+
+Look up `JOB_ID` using only the `secondary` profile from `accounts.json`.
+The job must belong to that CDS account. If successful, download its result
+into the current directory using a generated filename; otherwise skip it
+without waiting:
+
+```sh
+era5-download --config accounts.json --account secondary download JOB_ID
+```
+
+`jobs` authenticates separately for each selected profile using
+`ecmwf.datastores.Client`. It requests the account's job list from CDS in
+newest-created order, follows the returned pages, and retrieves metadata for
+each job ID. It stops when the list ends or `--limit` is reached (default:
+1,000 per account). Results are limited to jobs still available through the
+CDS API; the command does not maintain a local job history.
+
+Without `--status`, no status filter is sent. Choose one of `accepted`,
+`running`, `successful`, `failed` or `rejected` to restrict the listing.
+Their meanings are explained under [Job statuses](#job-statuses). `download`
+skips other statuses without waiting; `watch` queries successful jobs again
+on later cycles. To inspect both accepted and running jobs, run the two
+status queries shown above. `jobs --manifest jobs.csv` also writes the listed
+IDs, generated filenames and account labels to a CSV, refusing to overwrite
+an existing file.
+
+`download` with no job IDs or manifest and each `watch` cycle use the same
+account-listing process with a `successful` status filter. Downloads by
+explicit ID or manifest instead look up just the supplied IDs; `--limit`
+does not restrict these downloads. For each successful job, the package
+retrieves its result URL and byte count from CDS, then transfers the result
+file over HTTP. Explicit job IDs require exactly one selected account.
+
+`watch` waits 60 seconds between completed cycles by default and runs until
+Ctrl-C, or for `--cycles N` cycles. Each cycle applies the listing limit
+again; it does not automatically advance past previously downloaded jobs.
+Both download commands use the current directory unless `-o DIR` is supplied.
+`--quiet` disables their progress bars.
+
+Manifests use the following columns; the legacy `fnm,rid,acc` names are also
+accepted. The account column is optional and defaults to `default`:
+
+```csv
+filename,job_id,account
+u200_202001.nc,EXAMPLE_JOB_ID,default
+```
+
+Manifest filenames must be safe relative paths within the output directory.
+Downloads use the manifest's filenames and, unless accounts are explicitly
+selected, load the profiles named in its rows. Explicit `--account` or
+`--all-accounts` selection limits processing to rows whose account is among
+the selected profiles. A submit manifest without an
+account column can only be appended to using the `default` account.
+
+### Generated filenames
+
+A **generated filename** is the local destination name this package builds
+from a job's request metadata. It is not a filename supplied by CDS. The
+`FILENAME` column printed by `jobs` shows this proposed name; listing a job
+does not create a file.
+
+For a simple request for the u component of wind at 200 hPa in January
+2020, the base name is `u200_202001.nc`: `u` identifies the variable, `200`
+the pressure level, and `202001` the year and month. Additional selections
+and job identity can add suffixes:
+
+| Example name | Meaning |
+| --- | --- |
+| `u200_202001.nc` | Simple request metadata, or the offline `filenames` helper's output. |
+| `u200_202001-fd08714ce1ec.nc` | The same metadata with `time=["00:00"]`; the 12-character suffix identifies the request selections. |
+| `u200_202001-fd08714ce1ec-73bd7a28f8c41433.nc` | The preceding request with job ID `example-job`; the additional 16-character suffix identifies that job. |
+
+These examples use list-valued `variable`, `pressure_level`, `year` and
+`month`, with `data_format="netcdf"`. A **hash** is a deterministic string
+computed from metadata or a job ID; it helps distinguish names but is not
+a checksum of the downloaded data. Request hashes are added for extra keys
+such as `day`, `time`, `area` or `grid`, multiple selections, and unknown
+variable names. Multiple variables use `multivar`; multiple levels use
+`multilevel`. Names are limited to 180 characters. Dataset IDs and account
+labels are not included, so filenames should not serve as a complete record
+of the request.
+
+Which name is used depends on the command:
+
+| Command | Filename source |
+| --- | --- |
+| `submit` | Generates a name before submission and records it in the manifest, without a job-ID suffix. |
+| `jobs`, `jobs --manifest`, `download` without a manifest, `watch` | Generates a name from request metadata and includes the job-ID suffix. |
+| `download --manifest` | Uses the manifest's `filename` exactly, including any permitted relative subdirectory. |
+| `filenames` | Prints simple `FIELD_YYYYMM.nc` names without inspecting requests or adding hashes. |
+| `fetch-url` | Uses the path supplied with `-o`. |
+
+The extension comes from request settings: recognized GRIB formats produce
+`.grib`, archive formats produce `.zip`, and other or missing formats default
+to `.nc`. The package does not inspect the result's contents to choose the
+extension. If CDS returns an automatic ZIP for a NetCDF request, a generated
+`.nc` name may therefore contain ZIP bytes. Changing a filename does not
+convert the data; use the file's actual format when opening or unpacking it.
+
+### Transfer and worker behavior
+
+Transfers write to `FILE.part`, then atomically replace `FILE` on completion.
+They resume partial data when the server supports HTTP ranges, otherwise
+restart the partial transfer. Failed transfers retain partial data.
+
+An existing `FILE` is skipped only if it matches a supplied expected byte
+count (taken from CDS result metadata for job downloads). Otherwise use
+`--overwrite`; the old file remains until the replacement succeeds.
+`fetch-url` also accepts a text file containing a URL and an explicit
+`--expected-size BYTES`. Without an expected size, existing files require
+`--overwrite` even if HTTP size headers would be available. A new chunked
+response with no known size is accepted after a clean end of stream; it
+cannot be checked against an independent byte count.
+
+Workers using the same output filename coordinate through an exclusive
+`FILE.lock`; a worker skips an already reserved target. Locks record the
+owner's hostname, process ID and creation time. Normal exits and handled
+interruptions release the lock. After a hard crash, manually remove it only
+after confirming that the owner has stopped. Locks are never stolen based
+on age.
+
+Run `era5-download --help` or `era5-download <command> --help` for full
+options. The CLI can also be invoked as `python -m era5_download`.
+
+## Variable reference
 
 `--var` accepts the official GRIB short names in these complete tables for
 all nine supported dataset presets. The package translates each name to
@@ -816,285 +1111,3 @@ The tables cover the supported ERA5 and ERA5-Land collections, not every
 ECMWF product or the specialized MARS/timeseries request schemas. If CDS
 adds a variable after this snapshot, use a template with the new CDS name
 until the catalogue is updated.
-
-#### Templates and submission tracking
-
-Combining `--template` with `--var`/`--pressure-level` replaces only the
-request's `variable`/`pressure_level` fields, leaving every other template
-field (region, times, days, product type, output format) unchanged, and adds
-none of the automatic defaults described above — useful for keeping a
-hand-written template's custom settings while still choosing the variable
-through `--var`. For hourly and daily-statistics datasets, `submit` fills in
-every calendar day of each month unless the template already sets its own
-`day` selection.
-
-Each successful submission is appended to `--manifest` immediately. On
-restart, generated filenames already in that manifest are skipped regardless
-of job status. Use a separate manifest for each dataset/request template;
-filenames are not a complete request identity. A failure or interruption
-between remote submission and recording its row can leave an unrecorded job;
-inspect `jobs` before restarting in that case.
-
-With multiple accounts selected, submissions are spread round-robin. Each
-account is throttled to `--max-in-flight` (default: 2) accepted/running jobs
-**submitted by the current invocation**. It polls the oldest tracked job
-every `--poll-interval` seconds (default: 5). Earlier jobs, including jobs
-loaded from a resume manifest, do not count toward this limit. Submission
-returns once all new jobs have been recorded; it does not wait for the last
-jobs to finish or download their results. Use one submission process per
-manifest; `.lock` reservations coordinate downloads only.
-
-### Download
-
-The **1,000-job listing limit is a package default**, not a CDS server quota.
-Change it with `--limit`; it controls the total jobs listed per account.
-The package requests API pages of up to 100 jobs until that total is reached
-or the server returns no further results. This is separate from CDS limits
-on request size or concurrent processing.
-
-Retrieve up to 1,000 jobs available through the CDS API for the default
-account, newest-created first, and print their [account label](#account-labels),
-job ID, [status](#job-statuses) and [generated filename](#generated-filenames).
-This queries the account's server-side job list with
-no status or dataset filter, so it includes pending, running and finished
-jobs, including jobs submitted with other tools:
-
-```sh
-era5-download jobs
-```
-
-To list up to 5,000 available jobs for the default account instead:
-
-```sh
-era5-download jobs --limit 5000
-```
-
-Check only the jobs recorded in a submission manifest, using each row's
-account credentials and original filename:
-
-```sh
-era5-download --config accounts.json jobs --from-manifest jobs.csv
-```
-
-`--from-manifest` reads an existing CSV without modifying it. Accounts are
-selected from its rows unless `--account` or `--all-accounts` is specified;
-explicit selection restricts the rows processed. Each job is looked up
-directly, so `--limit` does not apply. Combine with `--status running` to
-filter results or `--json` for structured status output. Empty manifests
-produce an empty listing. `--manifest NEW.csv` remains an optional export
-of the listed jobs (filename, job ID and account, without status), and
-refuses to overwrite an existing file.
-
-To list only jobs currently running for the default account, apply the
-`running` status filter. The 1,000-job limit applies to the filtered results:
-
-```sh
-era5-download jobs --status running
-```
-
-To list accepted jobs that have not started running for that same account,
-query the `accepted` status separately:
-
-```sh
-era5-download jobs --status accepted
-```
-
-Look up the two specified job IDs directly under the default account and
-download their results into the current directory using generated filenames.
-Both IDs must belong to that account. Each job is downloaded only if its
-status is `successful`; other statuses are skipped without waiting:
-
-```sh
-era5-download download JOB_ID_1 JOB_ID_2
-```
-
-Read job IDs, destination filenames and account labels from `jobs.csv`, then
-look up each job under the account specified in its row. Download successful
-results to those filenames relative to the current directory; skip other
-statuses without waiting. This example uses default credentials, so the CSV
-account column must be absent or contain only `default`:
-
-```sh
-era5-download download --manifest jobs.csv
-```
-
-For a manifest containing named accounts, load their credentials from
-`accounts.json`. Account labels in the CSV must match profiles in that file;
-the command automatically selects the profiles referenced by the rows:
-
-```sh
-era5-download --config accounts.json download --manifest jobs.csv
-```
-
-To discover downloadable jobs without supplying IDs or a manifest, query
-the default account for up to 1,000 successful jobs, newest-created first,
-and download their results into the current directory:
-
-```sh
-era5-download download
-```
-
-For the default account, immediately query up to 1,000 successful jobs and
-download their results into the current directory. Wait 300 seconds after
-that cycle finishes, then repeat until Ctrl-C. Each cycle queries the newest
-successful jobs again; existing files with matching expected sizes are
-skipped. Increase `--limit` to reach jobs beyond the newest 1,000:
-
-```sh
-era5-download watch --interval 300
-```
-
-Download the supplied HTTP(S) URL directly to `out.nc` in the current
-directory. Replace `URL` with the download URL. This command requires no CDS
-account configuration and performs no CDS job lookup:
-
-```sh
-era5-download fetch-url URL -o out.nc
-```
-
-Print 24 filenames: January–December 2020 for `u200`, followed by the same
-months for `sst`. This is an offline naming helper; it uses no credentials,
-contacts no service and creates no files:
-
-```sh
-era5-download filenames u200 sst --begin 2020 --end 2021
-```
-
-`filenames` accepts the same `--begin`/`--end` `YYYY`/`YYYYMM`/`YYYYMMDD`
-values as `submit`, with `--end` exclusive at month granularity; this
-example prints 24 names: 12 months of 2020 for each field. `filenames` is an
-offline helper for simple `.nc` names; it does not generate a submission
-manifest or include request/job hashes.
-
-Query every account profile in `accounts.json` independently, using each
-profile's credentials. For the configuration shown under
-[Credentials](#credentials), that means `default` and `secondary`. Print up
-to 1,000 jobs per account with no status filter, grouped by account and
-newest-created first within each account:
-
-```sh
-era5-download --config accounts.json --all-accounts jobs
-```
-
-Look up `JOB_ID` using only the `secondary` profile from `accounts.json`.
-The job must belong to that CDS account. If successful, download its result
-into the current directory using a generated filename; otherwise skip it
-without waiting:
-
-```sh
-era5-download --config accounts.json --account secondary download JOB_ID
-```
-
-`jobs` authenticates separately for each selected profile using
-`ecmwf.datastores.Client`. It requests the account's job list from CDS in
-newest-created order, follows the returned pages, and retrieves metadata for
-each job ID. It stops when the list ends or `--limit` is reached (default:
-1,000 per account). Results are limited to jobs still available through the
-CDS API; the command does not maintain a local job history.
-
-Without `--status`, no status filter is sent. Choose one of `accepted`,
-`running`, `successful`, `failed` or `rejected` to restrict the listing.
-Their meanings are explained under [Job statuses](#job-statuses). `download`
-skips other statuses without waiting; `watch` queries successful jobs again
-on later cycles. To inspect both accepted and running jobs, run the two
-status queries shown above. `jobs --manifest jobs.csv` also writes the listed
-IDs, generated filenames and account labels to a CSV, refusing to overwrite
-an existing file.
-
-`download` with no job IDs or manifest and each `watch` cycle use the same
-account-listing process with a `successful` status filter. Downloads by
-explicit ID or manifest instead look up just the supplied IDs; `--limit`
-does not restrict these downloads. For each successful job, the package
-retrieves its result URL and byte count from CDS, then transfers the result
-file over HTTP. Explicit job IDs require exactly one selected account.
-
-`watch` waits 60 seconds between completed cycles by default and runs until
-Ctrl-C, or for `--cycles N` cycles. Each cycle applies the listing limit
-again; it does not automatically advance past previously downloaded jobs.
-Both download commands use the current directory unless `-o DIR` is supplied.
-`--quiet` disables their progress bars.
-
-Manifests use the following columns; the legacy `fnm,rid,acc` names are also
-accepted. The account column is optional and defaults to `default`:
-
-```csv
-filename,job_id,account
-u200_202001.nc,EXAMPLE_JOB_ID,default
-```
-
-Manifest filenames must be safe relative paths within the output directory.
-Downloads use the manifest's filenames and, unless accounts are explicitly
-selected, load the profiles named in its rows. Explicit `--account` or
-`--all-accounts` selection limits processing to rows whose account is among
-the selected profiles. A submit manifest without an
-account column can only be appended to using the `default` account.
-
-### Generated filenames
-
-A **generated filename** is the local destination name this package builds
-from a job's request metadata. It is not a filename supplied by CDS. The
-`FILENAME` column printed by `jobs` shows this proposed name; listing a job
-does not create a file.
-
-For a simple request for the u component of wind at 200 hPa in January
-2020, the base name is `u200_202001.nc`: `u` identifies the variable, `200`
-the pressure level, and `202001` the year and month. Additional selections
-and job identity can add suffixes:
-
-| Example name | Meaning |
-| --- | --- |
-| `u200_202001.nc` | Simple request metadata, or the offline `filenames` helper's output. |
-| `u200_202001-fd08714ce1ec.nc` | The same metadata with `time=["00:00"]`; the 12-character suffix identifies the request selections. |
-| `u200_202001-fd08714ce1ec-73bd7a28f8c41433.nc` | The preceding request with job ID `example-job`; the additional 16-character suffix identifies that job. |
-
-These examples use list-valued `variable`, `pressure_level`, `year` and
-`month`, with `data_format="netcdf"`. A **hash** is a deterministic string
-computed from metadata or a job ID; it helps distinguish names but is not
-a checksum of the downloaded data. Request hashes are added for extra keys
-such as `day`, `time`, `area` or `grid`, multiple selections, and unknown
-variable names. Multiple variables use `multivar`; multiple levels use
-`multilevel`. Names are limited to 180 characters. Dataset IDs and account
-labels are not included, so filenames should not serve as a complete record
-of the request.
-
-Which name is used depends on the command:
-
-| Command | Filename source |
-| --- | --- |
-| `submit` | Generates a name before submission and records it in the manifest, without a job-ID suffix. |
-| `jobs`, `jobs --manifest`, `download` without a manifest, `watch` | Generates a name from request metadata and includes the job-ID suffix. |
-| `download --manifest` | Uses the manifest's `filename` exactly, including any permitted relative subdirectory. |
-| `filenames` | Prints simple `FIELD_YYYYMM.nc` names without inspecting requests or adding hashes. |
-| `fetch-url` | Uses the path supplied with `-o`. |
-
-The extension comes from request settings: recognized GRIB formats produce
-`.grib`, archive formats produce `.zip`, and other or missing formats default
-to `.nc`. The package does not inspect the result's contents to choose the
-extension. If CDS returns an automatic ZIP for a NetCDF request, a generated
-`.nc` name may therefore contain ZIP bytes. Changing a filename does not
-convert the data; use the file's actual format when opening or unpacking it.
-
-### Transfer and worker behavior
-
-Transfers write to `FILE.part`, then atomically replace `FILE` on completion.
-They resume partial data when the server supports HTTP ranges, otherwise
-restart the partial transfer. Failed transfers retain partial data.
-
-An existing `FILE` is skipped only if it matches a supplied expected byte
-count (taken from CDS result metadata for job downloads). Otherwise use
-`--overwrite`; the old file remains until the replacement succeeds.
-`fetch-url` also accepts a text file containing a URL and an explicit
-`--expected-size BYTES`. Without an expected size, existing files require
-`--overwrite` even if HTTP size headers would be available. A new chunked
-response with no known size is accepted after a clean end of stream; it
-cannot be checked against an independent byte count.
-
-Workers using the same output filename coordinate through an exclusive
-`FILE.lock`; a worker skips an already reserved target. Locks record the
-owner's hostname, process ID and creation time. Normal exits and handled
-interruptions release the lock. After a hard crash, manually remove it only
-after confirming that the owner has stopped. Locks are never stolen based
-on age.
-
-Run `era5-download --help` or `era5-download <command> --help` for full
-options. The CLI can also be invoked as `python -m era5_download`.

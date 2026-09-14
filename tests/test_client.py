@@ -21,6 +21,20 @@ class FakeBackend:
 
 
 class ClientTests(unittest.TestCase):
+    def test_result_url_only_for_successful_jobs(self):
+        backend = Mock()
+        backend.get_results.return_value.location = "https://example.test/result"
+        client = self.client(backend)
+        for status in ("accepted", "running", "failed", "rejected"):
+            self.assertIsNone(client.get_result_url(Job("id", status, "dataset", {})))
+        backend.get_results.assert_not_called()
+        self.assertEqual(client.get_result_url(Job("id", "successful", "dataset", {})),
+                         "https://example.test/result")
+        backend.get_results.side_effect = RuntimeError("secret URL")
+        with self.assertRaisesRegex(CDSError, "CDS results lookup failed") as error:
+            client.get_result_url(Job("id", "successful", "dataset", {}))
+        self.assertNotIn("secret", str(error.exception))
+
     def setUp(self):
         self.credentials = Credentials("test-account", "test-key", "https://example.test/api")
 

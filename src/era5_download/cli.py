@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import csv
 import itertools
 import json
 import math
@@ -93,6 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
     jobs.add_argument("--manifest", type=Path, help="also write a CSV manifest; fails if it already exists")
     jobs.add_argument("--from-manifest", type=Path,
                       help="look up only jobs in this CSV, using its accounts and filenames; ignores --limit")
+    jobs.add_argument("--urls-csv", type=Path,
+                      help="save job statuses and successful result URLs to a new CSV")
     for name, help_text in (("download", "download job IDs, a manifest, or all successful jobs"),
                             ("watch", "poll and download successful jobs repeatedly")):
         command = sub.add_parser(name, help=help_text)
@@ -252,6 +255,11 @@ def run(args) -> int:
         return 0
     entries = None
     names = args.account
+    if args.command == "jobs" and args.urls_csv and args.urls_csv.exists():
+        raise ValueError("URL CSV already exists; choose a new output path")
+    if (args.command == "jobs" and args.urls_csv and args.manifest
+            and args.urls_csv.resolve() == args.manifest.resolve()):
+        raise ValueError("Use separate paths for --urls-csv and --manifest")
     input_manifest = (args.manifest if args.command == "download" else
                       args.from_manifest if args.command == "jobs" else None)
     if args.command == "jobs" and args.manifest and args.manifest.exists():
@@ -309,6 +317,8 @@ def run(args) -> int:
                     continue
                 summaries.append(dict(account=account, job_id=job.job_id, status=job.status,
                                       dataset=job.dataset, filename=filename))
+                if args.urls_csv:
+                    summaries[-1]["url"] = client.get_result_url(job) or ""
                 manifest.append(ManifestEntry(filename, job.job_id, account))
         if args.json:
             print(json.dumps(summaries, indent=2))
@@ -318,6 +328,12 @@ def run(args) -> int:
                 print("\t".join(job[key] for key in ("account", "job_id", "status", "filename")))
         if args.manifest:
             write_manifest(args.manifest, manifest)
+        if args.urls_csv:
+            with args.urls_csv.open("x", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=["filename", "job_id", "account", "status", "url"],
+                                        extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(summaries)
         return 0
     return 0
 
