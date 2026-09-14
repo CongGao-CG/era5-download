@@ -128,7 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--manifest", required=True, type=Path,
                         help="CSV manifest to append submitted jobs to; read first to skip repeats")
     submit.add_argument("--max-in-flight", type=_count, default=2,
-                        help="max accepted/running jobs submitted per account in this invocation (default: 2)")
+                        help="max tracked accepted/running jobs per account (default: 2)")
+    submit.add_argument("--account-strategy", choices=("round-robin", "least-busy"), default="round-robin",
+                        help="account selection strategy (default: round-robin)")
+    submit.add_argument("--lookback", type=_count, default=10,
+                        help="recent distinct manifest jobs per account checked by least-busy (default: 10)")
     submit.add_argument("--poll-interval", type=_positive, default=5,
                         help="seconds between status polls while throttled (default: 5)")
     submit.add_argument("--quiet", action="store_true", help="suppress per-job output")
@@ -194,9 +198,19 @@ def _submit_cycle(args, clients) -> int:
     accounts = list(clients)
     if not accounts:
         raise ValueError("Select at least one account")
-    existing = {entry.filename for entry in read_manifest(args.manifest)} if args.manifest.exists() else set()
+    entries = read_manifest(args.manifest) if args.manifest.exists() else []
+    existing = {entry.filename for entry in entries}
     validate_manifest_append(args.manifest, accounts)
     in_flight = {name: deque() for name in accounts}
+    least_busy = getattr(args, "account_strategy", "round-robin") == "least-busy"
+    if least_busy:
+        seen = {name: set() for name in accounts}
+        for entry in reversed(entries):
+            if (entry.account in seen and len(seen[entry.account]) < getattr(args, "lookback", 10)
+                    and entry.job_id not in seen[entry.account]):
+                seen[entry.account].add(entry.job_id)
+                in_flight[entry.account].append(entry.job_id)
+    next_account = 0
     account_cycle = itertools.cycle(accounts)
     submitted = skipped = 0
     for year, month in months:
@@ -205,7 +219,20 @@ def _submit_cycle(args, clients) -> int:
         if filename in existing:
             skipped += 1
             continue
-        account = next(account_cycle)
+        if least_busy:
+            while True:
+                for name in accounts:
+                    in_flight[name] = deque(
+                        job_id for job_id in in_flight[name]
+                        if clients[name].get_job(job_id).status in _OPEN_STATUSES)
+                order = accounts[next_account:] + accounts[:next_account]
+                account = min(order, key=lambda name: len(in_flight[name]))
+                if len(in_flight[account]) < args.max_in_flight:
+                    next_account = (accounts.index(account) + 1) % len(accounts)
+                    break
+                time.sleep(args.poll_interval)
+        else:
+            account = next(account_cycle)
         client = clients[account]
         queue = in_flight[account]
         while len(queue) >= args.max_in_flight:

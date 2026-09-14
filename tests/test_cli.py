@@ -89,6 +89,47 @@ class SubmitCycleTests(unittest.TestCase):
         entries = read_manifest(self.manifest)
         self.assertEqual([entry.account for entry in entries[:4]], ["a", "b", "a", "b"])
 
+    def test_least_busy_checks_recent_jobs_and_selects_idle_account(self):
+        from unittest.mock import Mock
+        self.write_template({"variable": "sst"})
+        for filename, job_id, account in (("old.nc", "old", "a"), ("busy.nc", "busy", "a"),
+                                          ("done.nc", "done", "b")):
+            append_manifest(self.manifest, ManifestEntry(filename, job_id, account))
+        clients = {name: FakeClient() for name in ("a", "b")}
+        clients["a"].get_job = Mock(return_value=SimpleNamespace(status="running"))
+        clients["b"].get_job = Mock(return_value=SimpleNamespace(status="successful"))
+        _submit_cycle(self.args(end=(2020, 2), account_strategy="least-busy", lookback=1), clients)
+        self.assertEqual(len(clients["a"].submitted), 0)
+        self.assertEqual(len(clients["b"].submitted), 1)
+        clients["a"].get_job.assert_called_once_with("busy")
+        clients["b"].get_job.assert_called_once_with("done")
+
+    def test_least_busy_waits_when_full_then_rotates_ties(self):
+        from unittest.mock import Mock
+        self.write_template({"variable": "sst"})
+        clients = {name: FakeClient() for name in ("a", "b")}
+        for name in clients:
+            append_manifest(self.manifest, ManifestEntry(f"{name}.nc", f"old-{name}", name))
+            clients[name].get_job = Mock(side_effect=[SimpleNamespace(status="running"),
+                                                    SimpleNamespace(status="successful"),
+                                                    SimpleNamespace(status="successful")])
+        with patch("era5_download.cli.time.sleep") as sleep:
+            _submit_cycle(self.args(end=(2020, 3), account_strategy="least-busy", lookback=10,
+                                    max_in_flight=1), clients)
+        sleep.assert_called_once_with(0)
+        self.assertEqual([row.account for row in read_manifest(self.manifest)[-2:]], ["a", "b"])
+
+    def test_least_busy_lookup_failure_does_not_submit(self):
+        from unittest.mock import Mock
+        from era5_download.client import CDSError
+        self.write_template({"variable": "sst"})
+        append_manifest(self.manifest, ManifestEntry("old.nc", "old", "a"))
+        client = FakeClient()
+        client.get_job = Mock(side_effect=CDSError("lookup failed"))
+        with self.assertRaises(CDSError):
+            _submit_cycle(self.args(account_strategy="least-busy"), {"a": client})
+        self.assertEqual(client.submitted, [])
+
     def test_throttles_until_earlier_job_clears(self):
         self.write_template({"variable": "vertical_velocity", "pressure_level": "500"})
         client = ThrottledClient(clears_after=2)

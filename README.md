@@ -212,7 +212,7 @@ This package's `submit` creates one job per calendar month from a fixed
 template, whether that template comes from `--var`/`--pressure-level` or
 from `--template`. It keeps the selected variables, levels, region, days and
 times together; it does not automatically split by variable or timestep.
-`--max-in-flight 2` is the default cap on accepted/running jobs tracked by
+With the default round-robin strategy, `--max-in-flight 2` caps accepted/running jobs tracked by
 that invocation, not a submissions-per-second limit or a count of jobs from
 other runs. It is a package setting, not a CDS allowance. Account for other
 outstanding jobs and avoid starting many submission processes at once.
@@ -424,7 +424,7 @@ filenames are not a complete request identity. A failure or interruption
 between remote submission and recording its row can leave an unrecorded job;
 inspect `jobs` before restarting in that case.
 
-With multiple accounts selected, submissions are spread round-robin. Each
+By default, with multiple accounts selected, submissions are spread round-robin. Each
 account is throttled to `--max-in-flight` (default: 2) accepted/running jobs
 **submitted by the current invocation**. It polls the oldest tracked job
 every `--poll-interval` seconds (default: 5). Earlier jobs, including jobs
@@ -432,6 +432,31 @@ loaded from a resume manifest, do not count toward this limit. Submission
 returns once all new jobs have been recorded; it does not wait for the last
 jobs to finish or download their results. Use one submission process per
 manifest; `.lock` reservations coordinate downloads only.
+
+To choose the account with the fewest tracked accepted/running jobs, use:
+
+```sh
+era5-download --config accounts.json --all-accounts submit era5_hourly_pressure \
+  --var u --pressure-level 250 --begin 199601 --end 199701 \
+  --manifest jobs.csv --account-strategy least-busy --lookback 10
+```
+
+`least-busy` reads the last N distinct job IDs for each selected account
+from the manifest's row order (`--lookback` defaults to 10). Before each
+new submission it checks those jobs and any unfinished jobs submitted by
+this invocation. `accepted` and `running` count as busy; successful, failed
+and rejected jobs are removed from tracking. Ties rotate between accounts.
+If all accounts have at least `--max-in-flight` tracked busy jobs, it waits
+`--poll-interval` seconds and checks again. Status lookup errors stop the
+command rather than treating an unknown workload as idle.
+
+Discovered unfinished jobs remain tracked for the invocation, even as new
+jobs are added. Older jobs outside the initial lookback, jobs absent from
+the manifest, and submissions made by other processes are not counted.
+Choose a sufficiently large lookback for your workload; this strategy does
+not guarantee faster CDS processing. `--lookback` is ignored by the default
+`round-robin` strategy. Restart skipping still uses recorded filenames,
+regardless of job status, and the manifest is appended to as before.
 
 ### Download
 
